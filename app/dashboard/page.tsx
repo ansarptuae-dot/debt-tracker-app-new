@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 
 type Tab = "OVERVIEW" | "CARDS" | "STATEMENTS" | "PAYMENTS";
@@ -14,153 +14,144 @@ type CardRow = {
   credit_limit: number | null;
   currency: string | null;
   notes: string | null;
+  created_at?: string;
 };
 
 type StatementRow = {
   id: string;
   user_id: string;
   card_id: string;
-  statement_month: string; // YYYY-MM-DD
-  statement_date: string | null; // YYYY-MM-DD
-  due_date: string | null; // YYYY-MM-DD
+  statement_month: string; // YYYY-MM-01
+  statement_date: string | null;
+  due_date: string | null;
   statement_amount: number | null;
   currency: string | null;
+  created_at?: string;
 };
 
 type PaymentRow = {
   id: string;
   user_id: string;
-  kind: string; // "CARD"
+  kind: string; // "CARD" etc
   card_id: string | null;
   statement_id: string | null;
   payment_date: string; // YYYY-MM-DD
   amount: number | null;
   currency: string | null;
   note: string | null;
+  created_at?: string;
 };
 
-function monthFirstDay(input: string) {
-  // Convert any YYYY-MM-DD to YYYY-MM-01 without using new Date() in render.
-  if (!input || input.length < 7) return input;
-  const y = input.slice(0, 4);
-  const m = input.slice(5, 7);
+function isoToday(): string {
+  const d = new Date();
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function firstDayOfMonth(dateStr: string): string | null {
+  // dateStr is YYYY-MM-DD
+  if (!dateStr || dateStr.length < 10) return null;
+  const y = dateStr.slice(0, 4);
+  const m = dateStr.slice(5, 7);
+  if (!y || !m) return null;
   return `${y}-${m}-01`;
 }
 
 export default function DashboardPage() {
-  // Create Supabase only after mount (avoids build-time execution issues)
-  const supabaseRef = useRef<ReturnType<typeof createClient> | null>(null);
-  const [mounted, setMounted] = useState(false);
-
-  useEffect(() => {
-    try {
-      supabaseRef.current = createClient();
-      setMounted(true);
-    } catch (e: any) {
-      console.error(e);
-      setMounted(true);
-    }
-  }, []);
-
-  const supabase = supabaseRef.current;
+  const supabase = useMemo(() => createClient(), []);
 
   const [tab, setTab] = useState<Tab>("OVERVIEW");
   const [msg, setMsg] = useState("");
   const [loading, setLoading] = useState(true);
 
-  const [userId, setUserId] = useState<string>("");
+  const [mountedToday, setMountedToday] = useState<string>(""); // avoid new Date() during prerender
+
   const [userEmail, setUserEmail] = useState<string>("");
 
   const [cards, setCards] = useState<CardRow[]>([]);
   const [statements, setStatements] = useState<StatementRow[]>([]);
   const [payments, setPayments] = useState<PaymentRow[]>([]);
 
-  // CARDS form
+  // ------- Cards form -------
   const [cardName, setCardName] = useState("");
   const [cardBank, setCardBank] = useState("");
   const [cardLimit, setCardLimit] = useState("");
   const [cardCurrency, setCardCurrency] = useState("AED");
   const [cardNotes, setCardNotes] = useState("");
 
-  // STATEMENTS form
-  const [selectedCardId, setSelectedCardId] = useState("");
+  // ------- Statements form -------
+  const [selectedCardId, setSelectedCardId] = useState<string>("");
   const [editingStatementId, setEditingStatementId] = useState<string>("");
-  const [stMonth, setStMonth] = useState(""); // YYYY-MM-DD (we store as YYYY-MM-01)
-  const [stDate, setStDate] = useState("");
-  const [stDue, setStDue] = useState("");
-  const [stAmount, setStAmount] = useState("");
+  const [stMonth, setStMonth] = useState<string>(""); // date input
+  const [stDate, setStDate] = useState<string>(""); // optional
+  const [stDue, setStDue] = useState<string>(""); // optional
+  const [stAmount, setStAmount] = useState<string>(""); // number string
 
-  // PAYMENTS form
+  // ------- Payments form -------
   const [editingPaymentId, setEditingPaymentId] = useState<string>("");
   const [payCardId, setPayCardId] = useState<string>("");
-  const [payStatementId, setPayStatementId] = useState<string>("");
-  const [payDate, setPayDate] = useState<string>("");
+  const [payStatementId, setPayStatementId] = useState<string>(""); // optional
+  const [payDate, setPayDate] = useState<string>(""); // required
   const [payAmount, setPayAmount] = useState<string>("");
   const [payNote, setPayNote] = useState<string>("");
 
-  // Set today date only after mount (safe for Next prerender rules)
   useEffect(() => {
-    if (!payDate) {
-      const now = new Date();
-      const yyyy = String(now.getFullYear());
-      const mm = String(now.getMonth() + 1).padStart(2, "0");
-      const dd = String(now.getDate()).padStart(2, "0");
-      setPayDate(`${yyyy}-${mm}-${dd}`);
-    }
-  }, [payDate]);
+    // only runs in browser
+    const t = isoToday();
+    setMountedToday(t);
+    setPayDate(t);
+    // default statement month to current month first day
+    setStMonth(firstDayOfMonth(t) ?? "");
+    void loadAll();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   async function loadAll() {
-    if (!supabase) return;
     setLoading(true);
     setMsg("");
 
     const { data: userRes, error: userErr } = await supabase.auth.getUser();
     if (userErr) {
-      setMsg("Auth error: " + userErr.message);
+      setUserEmail("");
       setLoading(false);
+      setMsg("Auth error: " + userErr.message);
       return;
     }
+
     const user = userRes?.user;
     if (!user) {
-      setUserId("");
       setUserEmail("");
       setLoading(false);
       return;
     }
 
-    setUserId(user.id);
     setUserEmail(user.email ?? "");
 
-    const [cardsRes, stRes, payRes] = await Promise.all([
-      supabase.from("cards").select("*").eq("user_id", user.id).order("name"),
+    const [cardsRes, statementsRes, paymentsRes] = await Promise.all([
+      supabase.from("cards").select("*").eq("user_id", user.id).order("created_at", { ascending: false }),
       supabase.from("statements").select("*").eq("user_id", user.id).order("statement_month", { ascending: false }),
       supabase.from("payments").select("*").eq("user_id", user.id).order("payment_date", { ascending: false }).limit(50),
     ]);
 
     if (cardsRes.error) setMsg("Load cards error: " + cardsRes.error.message);
-    if (stRes.error) setMsg("Load statements error: " + stRes.error.message);
-    if (payRes.error) setMsg("Load payments error: " + payRes.error.message);
+    if (statementsRes.error) setMsg("Load statements error: " + statementsRes.error.message);
+    if (paymentsRes.error) setMsg("Load payments error: " + paymentsRes.error.message);
 
-    setCards((cardsRes.data ?? []) as any);
-    setStatements((stRes.data ?? []) as any);
-    setPayments((payRes.data ?? []) as any);
+    setCards((cardsRes.data as CardRow[]) ?? []);
+    setStatements((statementsRes.data as StatementRow[]) ?? []);
+    setPayments((paymentsRes.data as PaymentRow[]) ?? []);
 
     setLoading(false);
   }
 
-  useEffect(() => {
-    if (!mounted) return;
-    loadAll();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mounted]);
-
   async function signOut() {
-    if (!supabase) return;
     await supabase.auth.signOut();
     window.location.href = "/auth/login";
   }
 
-  // ---------- COMPUTED MAPS ----------
+  // ---------------- Derived maps ----------------
   const cardMap = useMemo(() => new Map(cards.map((c) => [c.id, c])), [cards]);
 
   const statementsByCard = useMemo(() => {
@@ -170,107 +161,111 @@ export default function DashboardPage() {
       arr.push(s);
       m.set(s.card_id, arr);
     }
+    // keep newest first
+    for (const [k, arr] of m.entries()) {
+      arr.sort((a, b) => (a.statement_month < b.statement_month ? 1 : -1));
+      m.set(k, arr);
+    }
     return m;
   }, [statements]);
 
-  const paidMap = useMemo(() => {
-    const m = new Map<string, number>(); // statement_id -> paid sum
+  const paidByStatement = useMemo(() => {
+    const m = new Map<string, number>();
     for (const p of payments) {
       if (!p.statement_id) continue;
-      const prev = m.get(p.statement_id) ?? 0;
-      m.set(p.statement_id, prev + Number(p.amount ?? 0));
+      const amt = Number(p.amount ?? 0);
+      if (!Number.isFinite(amt)) continue;
+      m.set(p.statement_id, (m.get(p.statement_id) ?? 0) + amt);
     }
     return m;
   }, [payments]);
 
   const pendingByCard = useMemo(() => {
-    const m = new Map<string, number>(); // card_id -> pending sum (statement_amount - paid)
+    const m = new Map<string, number>();
     for (const s of statements) {
       const amount = Number(s.statement_amount ?? 0);
-      const paid = paidMap.get(s.id) ?? 0;
-      const pending = Math.max(0, amount - paid);
-      const prev = m.get(s.card_id) ?? 0;
-      m.set(s.card_id, prev + pending);
+      const paid = paidByStatement.get(s.id) ?? 0;
+      const pending = amount - paid;
+      m.set(s.card_id, (m.get(s.card_id) ?? 0) + pending);
     }
     return m;
-  }, [statements, paidMap]);
+  }, [statements, paidByStatement]);
 
-  const totalLimit = useMemo(() => cards.reduce((a, c) => a + Number(c.credit_limit ?? 0), 0), [cards]);
+  const totalLimit = useMemo(() => cards.reduce((sum, c) => sum + Number(c.credit_limit ?? 0), 0), [cards]);
+
   const totalPending = useMemo(() => {
-    let t = 0;
-    for (const v of pendingByCard.values()) t += v;
-    return t;
-  }, [pendingByCard]);
+    let sum = 0;
+    for (const s of statements) {
+      const amount = Number(s.statement_amount ?? 0);
+      const paid = paidByStatement.get(s.id) ?? 0;
+      sum += amount - paid;
+    }
+    return sum;
+  }, [statements, paidByStatement]);
 
   const upcomingDue = useMemo(() => {
-    // This uses Date only with fixed inputs (no new Date() here).
-    // We also guard if due_date is missing.
-    const today = new Date(); // this runs on client only after mount anyway, but keep safe:
-    // NOTE: this memo runs during render; to avoid prerender issues, only compute if mounted.
-    if (!mounted) return [];
+    // no current-time call here; uses mountedToday (set in useEffect)
+    if (!mountedToday) return [];
+    const today = new Date(mountedToday + "T00:00:00");
+    const in30 = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 30);
 
-    const start = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
-    const end = start + 30 * 24 * 60 * 60 * 1000;
-
-    const list: Array<{ id: string; card_id: string; due_date: string; statement_month: string; pending: number; days: number; currency: string }> =
-      [];
+    const list: Array<
+      StatementRow & {
+        pending: number;
+        days: number;
+      }
+    > = [];
 
     for (const s of statements) {
       if (!s.due_date) continue;
-      const dueT = Date.parse(s.due_date);
-      if (!Number.isFinite(dueT)) continue;
-      if (dueT < start || dueT > end) continue;
+      const due = new Date(s.due_date + "T00:00:00");
+      if (Number.isNaN(due.getTime())) continue;
 
       const amount = Number(s.statement_amount ?? 0);
-      const paid = paidMap.get(s.id) ?? 0;
-      const pending = Math.max(0, amount - paid);
-      const days = Math.round((dueT - start) / (24 * 60 * 60 * 1000));
+      const paid = paidByStatement.get(s.id) ?? 0;
+      const pending = amount - paid;
+      if (pending <= 0) continue;
 
-      list.push({
-        id: s.id,
-        card_id: s.card_id,
-        due_date: s.due_date,
-        statement_month: s.statement_month,
-        pending,
-        days,
-        currency: s.currency ?? "AED",
-      });
+      if (due >= today && due <= in30) {
+        const days = Math.ceil((due.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+        list.push({ ...s, pending, days });
+      }
     }
 
-    list.sort((a, b) => a.days - b.days);
+    list.sort((a, b) => (a.due_date! > b.due_date! ? 1 : -1));
     return list;
-  }, [mounted, statements, paidMap]);
+  }, [mountedToday, statements, paidByStatement]);
 
-  // ---------- ACTIONS ----------
+  // ---------------- Actions: Cards ----------------
   async function addCard(e: React.FormEvent) {
     e.preventDefault();
     setMsg("");
-    if (!supabase) return;
 
-    if (!userId) {
-      setMsg("Please sign in first.");
-      return;
-    }
-
-    const name = cardName.trim();
-    if (!name) {
+    if (!cardName.trim()) {
       setMsg("Card name is required.");
       return;
     }
 
-    const credit_limit = Number(cardLimit.trim() || "0");
-    const payload = {
-      user_id: userId,
-      name,
-      bank: cardBank.trim() || null,
-      credit_limit: Number.isFinite(credit_limit) ? credit_limit : 0,
-      currency: (cardCurrency || "AED").trim() || "AED",
-      notes: cardNotes.trim() || null,
-    };
+    const { data: userRes } = await supabase.auth.getUser();
+    const user = userRes?.user;
+    if (!user) {
+      setMsg("Please sign in first.");
+      return;
+    }
 
-    const { error } = await supabase.from("cards").insert(payload);
+    const limit = Number(cardLimit || 0);
+
+    const { error } = await supabase.from("cards").insert({
+      user_id: user.id,
+      name: cardName.trim(),
+      bank: cardBank.trim() ? cardBank.trim() : null,
+      credit_limit: Number.isFinite(limit) ? limit : 0,
+      currency: cardCurrency.trim() || "AED",
+      notes: cardNotes.trim() ? cardNotes.trim() : null,
+    });
+
     if (error) {
-      setMsg("Save error: " + error.message);
+      setMsg("Save card error: " + error.message);
       return;
     }
 
@@ -280,114 +275,133 @@ export default function DashboardPage() {
     setCardCurrency("AED");
     setCardNotes("");
     await loadAll();
+    setTab("CARDS");
   }
 
   async function deleteCard(cardId: string) {
-    if (!supabase) return;
-    if (!confirm("Delete this card? This will remove its statements and payments.")) return;
-
     setMsg("");
-
-    // delete related rows first
-    const p1 = await supabase.from("payments").delete().eq("user_id", userId).eq("card_id", cardId);
-    if (p1.error) return setMsg("Delete payments error: " + p1.error.message);
-
-    const s1 = await supabase.from("statements").delete().eq("user_id", userId).eq("card_id", cardId);
-    if (s1.error) return setMsg("Delete statements error: " + s1.error.message);
-
-    const c1 = await supabase.from("cards").delete().eq("user_id", userId).eq("id", cardId);
-    if (c1.error) return setMsg("Delete card error: " + c1.error.message);
-
-    if (selectedCardId === cardId) setSelectedCardId("");
-    if (payCardId === cardId) {
-      setPayCardId("");
-      setPayStatementId("");
+    // note: may fail if statements reference card (FK). This is okay; show error.
+    const { error } = await supabase.from("cards").delete().eq("id", cardId);
+    if (error) {
+      setMsg("Delete card error: " + error.message);
+      return;
     }
-
     await loadAll();
   }
 
+  // ---------------- Actions: Statements ----------------
   function resetStatementForm() {
     setEditingStatementId("");
-    setStMonth("");
     setStDate("");
     setStDue("");
     setStAmount("");
+    if (mountedToday) setStMonth(firstDayOfMonth(mountedToday) ?? "");
   }
 
   function startEditStatement(s: StatementRow) {
     setTab("STATEMENTS");
-    setSelectedCardId(s.card_id);
     setEditingStatementId(s.id);
-    setStMonth(s.statement_month || "");
-    setStDate(s.statement_date || "");
-    setStDue(s.due_date || "");
+    setSelectedCardId(s.card_id);
+    setStMonth(s.statement_month ?? "");
+    setStDate(s.statement_date ?? "");
+    setStDue(s.due_date ?? "");
     setStAmount(String(s.statement_amount ?? ""));
   }
 
   async function saveStatement(e: React.FormEvent) {
     e.preventDefault();
     setMsg("");
-    if (!supabase) return;
 
-    if (!userId) return setMsg("Please sign in first.");
-    if (!selectedCardId) return setMsg("Select a card first.");
-
-    const month = monthFirstDay(stMonth);
-    if (!month) return setMsg("Statement month is required.");
-
-    const amount = Number(stAmount.trim() || "0");
-    const payload: any = {
-      user_id: userId,
-      card_id: selectedCardId,
-      statement_month: month,
-      statement_date: stDate || null,
-      due_date: stDue || null,
-      statement_amount: Number.isFinite(amount) ? amount : 0,
-      currency: "AED",
-    };
-
-    // Use UPSERT to avoid duplicate month error
-    const { error } = await supabase
-      .from("statements")
-      .upsert(payload, { onConflict: "user_id,card_id,statement_month" });
-
-    if (error) {
-      setMsg("Save statement error: " + error.message);
+    const { data: userRes } = await supabase.auth.getUser();
+    const user = userRes?.user;
+    if (!user) {
+      setMsg("Please sign in first.");
       return;
+    }
+
+    if (!selectedCardId) {
+      setMsg("Select a card first.");
+      return;
+    }
+
+    const month = firstDayOfMonth(stMonth);
+    if (!month) {
+      setMsg("Statement month is required.");
+      return;
+    }
+
+    const amount = Number(stAmount || 0);
+    const card = cardMap.get(selectedCardId);
+    const currency = (card?.currency ?? "AED") as string;
+
+    if (editingStatementId) {
+      const { error } = await supabase
+        .from("statements")
+        .update({
+          statement_month: month,
+          statement_date: stDate || null,
+          due_date: stDue || null,
+          statement_amount: Number.isFinite(amount) ? amount : 0,
+          currency,
+        })
+        .eq("id", editingStatementId);
+
+      if (error) {
+        setMsg("Update statement error: " + error.message);
+        return;
+      }
+    } else {
+      // IMPORTANT: upsert to avoid duplicate month error
+      const { error } = await supabase.from("statements").upsert(
+        {
+          user_id: user.id,
+          card_id: selectedCardId,
+          statement_month: month,
+          statement_date: stDate || null,
+          due_date: stDue || null,
+          statement_amount: Number.isFinite(amount) ? amount : 0,
+          currency,
+        },
+        { onConflict: "user_id,card_id,statement_month" }
+      );
+
+      if (error) {
+        setMsg("Save statement error: " + error.message);
+        return;
+      }
     }
 
     resetStatementForm();
     await loadAll();
+    setTab("STATEMENTS");
   }
 
   async function deleteStatement(statementId: string) {
-    if (!supabase) return;
-    if (!confirm("Delete this statement?")) return;
     setMsg("");
+    // unlink payments first to avoid FK issues
+    const unlink = await supabase.from("payments").update({ statement_id: null }).eq("statement_id", statementId);
+    if (unlink.error) {
+      setMsg("Unlink payments error: " + unlink.error.message);
+      return;
+    }
 
-    // unlink payments first
-    const u1 = await supabase
-      .from("payments")
-      .update({ statement_id: null })
-      .eq("user_id", userId)
-      .eq("statement_id", statementId);
-
-    if (u1.error) return setMsg("Unlink payments error: " + u1.error.message);
-
-    const d1 = await supabase.from("statements").delete().eq("user_id", userId).eq("id", statementId);
-    if (d1.error) return setMsg("Delete statement error: " + d1.error.message);
+    const del = await supabase.from("statements").delete().eq("id", statementId);
+    if (del.error) {
+      setMsg("Delete statement error: " + del.error.message);
+      return;
+    }
 
     await loadAll();
   }
 
+  // ---------------- Actions: Payments ----------------
   function resetPaymentForm() {
     setEditingPaymentId("");
     setPayCardId("");
     setPayStatementId("");
-    // keep payDate
     setPayAmount("");
     setPayNote("");
+    if (mountedToday) setPayDate(mountedToday);
   }
 
   function startEditPayment(p: PaymentRow) {
@@ -395,7 +409,7 @@ export default function DashboardPage() {
     setEditingPaymentId(p.id);
     setPayCardId(p.card_id ?? "");
     setPayStatementId(p.statement_id ?? "");
-    setPayDate(p.payment_date || "");
+    setPayDate(p.payment_date ?? (mountedToday || ""));
     setPayAmount(String(p.amount ?? ""));
     setPayNote(p.note ?? "");
   }
@@ -403,68 +417,94 @@ export default function DashboardPage() {
   async function savePayment(e: React.FormEvent) {
     e.preventDefault();
     setMsg("");
-    if (!supabase) return;
 
-    if (!userId) return setMsg("Please sign in first.");
-    if (!payCardId) return setMsg("Select a card.");
+    const { data: userRes } = await supabase.auth.getUser();
+    const user = userRes?.user;
+    if (!user) {
+      setMsg("Please sign in first.");
+      return;
+    }
 
-    const amount = Number(payAmount.trim() || "0");
-    const payload: any = {
-      user_id: userId,
-      kind: "CARD",
-      card_id: payCardId,
-      statement_id: payStatementId || null,
-      payment_date: payDate,
-      amount: Number.isFinite(amount) ? amount : 0,
-      currency: "AED",
-      note: payNote.trim() || null,
-    };
+    if (!payCardId) {
+      setMsg("Select a card.");
+      return;
+    }
+    if (!payDate) {
+      setMsg("Payment date is required.");
+      return;
+    }
+
+    const amount = Number(payAmount || 0);
+    const card = cardMap.get(payCardId);
+    const currency = (card?.currency ?? "AED") as string;
 
     if (editingPaymentId) {
-      const { error } = await supabase.from("payments").update(payload).eq("user_id", userId).eq("id", editingPaymentId);
-      if (error) return setMsg("Update payment error: " + error.message);
+      const { error } = await supabase
+        .from("payments")
+        .update({
+          kind: "CARD",
+          card_id: payCardId,
+          statement_id: payStatementId || null,
+          payment_date: payDate,
+          amount: Number.isFinite(amount) ? amount : 0,
+          currency,
+          note: payNote.trim() ? payNote.trim() : null,
+        })
+        .eq("id", editingPaymentId);
+
+      if (error) {
+        setMsg("Update payment error: " + error.message);
+        return;
+      }
     } else {
-      const { error } = await supabase.from("payments").insert(payload);
-      if (error) return setMsg("Save payment error: " + error.message);
+      const { error } = await supabase.from("payments").insert({
+        user_id: user.id,
+        kind: "CARD",
+        card_id: payCardId,
+        statement_id: payStatementId || null,
+        payment_date: payDate,
+        amount: Number.isFinite(amount) ? amount : 0,
+        currency,
+        note: payNote.trim() ? payNote.trim() : null,
+      });
+
+      if (error) {
+        setMsg("Save payment error: " + error.message);
+        return;
+      }
     }
 
     resetPaymentForm();
     await loadAll();
+    setTab("PAYMENTS");
   }
 
   async function deletePayment(paymentId: string) {
-    if (!supabase) return;
-    if (!confirm("Delete this payment?")) return;
-
     setMsg("");
-    const { error } = await supabase.from("payments").delete().eq("user_id", userId).eq("id", paymentId);
-    if (error) return setMsg("Delete payment error: " + error.message);
-
+    const { error } = await supabase.from("payments").delete().eq("id", paymentId);
+    if (error) {
+      setMsg("Delete payment error: " + error.message);
+      return;
+    }
     await loadAll();
   }
 
   async function updatePaymentStatement(paymentId: string, statementId: string) {
-    if (!supabase) return;
     setMsg("");
-
     const { error } = await supabase
       .from("payments")
       .update({ statement_id: statementId || null })
-      .eq("user_id", userId)
       .eq("id", paymentId);
 
-    if (error) return setMsg("Update link error: " + error.message);
+    if (error) {
+      setMsg("Update payment link error: " + error.message);
+      return;
+    }
+
     await loadAll();
   }
 
-  // statement options depend on selected card in payment form
-  const paymentStatementOptions = payCardId ? statementsByCard.get(payCardId) ?? [] : [];
-
-  // ---------- RENDER ----------
-  if (!mounted) {
-    return <div style={{ padding: 16, maxWidth: 900, margin: "0 auto" }}>Loading…</div>;
-  }
-
+  // ---------------- UI ----------------
   if (!userEmail) {
     return (
       <div style={{ padding: 16, maxWidth: 900, margin: "0 auto" }}>
@@ -478,11 +518,12 @@ export default function DashboardPage() {
   }
 
   const cardStatements = selectedCardId ? statementsByCard.get(selectedCardId) ?? [] : [];
+  const paymentStatementOptions = payCardId ? statementsByCard.get(payCardId) ?? [] : [];
 
   return (
     <div style={{ padding: 16, maxWidth: 1100, margin: "0 auto" }}>
       <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
-        <h1 style={{ fontSize: 22, fontWeight: 900, margin: 0 }}>Debt Tracker</h1>
+        <h1 style={{ fontSize: 22, fontWeight: 800, margin: 0 }}>Debt Tracker</h1>
         <div style={{ opacity: 0.75 }}>Signed in as: {userEmail}</div>
         <button
           onClick={signOut}
@@ -501,17 +542,13 @@ export default function DashboardPage() {
               padding: "8px 12px",
               borderRadius: 999,
               border: "1px solid #ccc",
-              fontWeight: 800,
+              fontWeight: 700,
               background: tab === t ? "#eee" : "white",
             }}
           >
             {t}
           </button>
         ))}
-        <div style={{ marginLeft: "auto", opacity: 0.7 }}>
-          Old pages: <Link href="/cards">/cards</Link>, <Link href="/statements">/statements</Link>,{" "}
-          <Link href="/payments">/payments</Link>
-        </div>
       </div>
 
       {msg ? (
@@ -564,7 +601,7 @@ export default function DashboardPage() {
                         {label} • Due {s.due_date} ({s.days} days)
                       </div>
                       <div style={{ marginTop: 6 }}>
-                        Pending: {s.currency} {Number(s.pending ?? 0).toFixed(2)}
+                        Pending: {s.currency ?? "AED"} {Number(s.pending ?? 0).toFixed(2)}
                       </div>
                       <div style={{ marginTop: 6, opacity: 0.8 }}>Statement month: {s.statement_month}</div>
                     </div>
@@ -607,7 +644,7 @@ export default function DashboardPage() {
               <input value={cardNotes} onChange={(e) => setCardNotes(e.target.value)} placeholder="any notes" />
             </label>
 
-            <button type="submit" style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid #999", fontWeight: 800 }}>
+            <button type="submit" style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid #999" }}>
               Save Card
             </button>
           </form>
@@ -623,28 +660,30 @@ export default function DashboardPage() {
               {cards.map((c) => {
                 const pending = pendingByCard.get(c.id) ?? 0;
                 return (
-                  <div key={c.id} style={{ padding: 12, border: "1px solid #eee", borderRadius: 12, display: "flex", gap: 12 }}>
-                    <div style={{ flex: 1 }}>
+                  <div key={c.id} style={{ padding: 12, border: "1px solid #eee", borderRadius: 12 }}>
+                    <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
                       <div style={{ fontWeight: 900 }}>
                         {c.name} {c.bank ? `• ${c.bank}` : ""}
                       </div>
-                      <div style={{ marginTop: 6 }}>
-                        Limit: {c.currency ?? "AED"} {Number(c.credit_limit ?? 0).toFixed(2)}
-                      </div>
-                      <div style={{ marginTop: 6, fontWeight: 900 }}>
-                        Pending: {c.currency ?? "AED"} {pending.toFixed(2)}
-                      </div>
-                      {c.notes ? <div style={{ marginTop: 6, opacity: 0.8 }}>{c.notes}</div> : null}
-                    </div>
-                    <div>
+
                       <button
                         type="button"
                         onClick={() => deleteCard(c.id)}
-                        style={{ padding: "8px 10px", borderRadius: 10, border: "1px solid #999", fontWeight: 800 }}
+                        style={{ marginLeft: "auto", padding: "8px 10px", borderRadius: 10, border: "1px solid #999" }}
                       >
                         Delete
                       </button>
                     </div>
+
+                    <div style={{ marginTop: 6 }}>
+                      Limit: {c.currency ?? "AED"} {Number(c.credit_limit ?? 0).toFixed(2)}
+                    </div>
+
+                    <div style={{ marginTop: 6, fontWeight: 800 }}>
+                      Pending: {c.currency ?? "AED"} {pending.toFixed(2)}
+                    </div>
+
+                    {c.notes ? <div style={{ marginTop: 6, opacity: 0.8 }}>{c.notes}</div> : null}
                   </div>
                 );
               })}
@@ -672,7 +711,7 @@ export default function DashboardPage() {
           </div>
 
           <form onSubmit={saveStatement} style={{ display: "grid", gap: 10, marginTop: 12 }}>
-            <div style={{ fontWeight: 900 }}>{editingStatementId ? "Edit Statement (will UPSERT)" : "Add / Update Statement (UPSERT)"}</div>
+            <div style={{ fontWeight: 900 }}>{editingStatementId ? "Edit Statement" : "Add / Update Statement"}</div>
 
             <label>
               Statement month (stored as 1st day)
@@ -695,15 +734,15 @@ export default function DashboardPage() {
             </label>
 
             <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-              <button type="submit" style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid #999", fontWeight: 800 }}>
-                Save Statement
+              <button type="submit" style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid #999" }}>
+                {editingStatementId ? "Update Statement" : "Save Statement"}
               </button>
 
               {editingStatementId ? (
                 <button
                   type="button"
                   onClick={resetStatementForm}
-                  style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid #999", fontWeight: 800 }}
+                  style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid #999" }}
                 >
                   Cancel Edit
                 </button>
@@ -716,22 +755,30 @@ export default function DashboardPage() {
           {loading ? (
             <p style={{ marginTop: 10 }}>Loading…</p>
           ) : !selectedCardId ? (
-            <p style={{ marginTop: 10 }}>Select a card to view statements.</p>
+            <p style={{ marginTop: 10 }}>Select a card to see its statements.</p>
           ) : cardStatements.length === 0 ? (
             <p style={{ marginTop: 10 }}>No statements for this card.</p>
           ) : (
             <div style={{ display: "grid", gap: 10, marginTop: 10 }}>
               {cardStatements.map((s) => {
                 const amount = Number(s.statement_amount ?? 0);
-                const paid = paidMap.get(s.id) ?? 0;
-                const pending = Math.max(0, amount - paid);
+                const paid = paidByStatement.get(s.id) ?? 0;
+                const pending = amount - paid;
 
                 return (
                   <div key={s.id} style={{ padding: 12, border: "1px solid #eee", borderRadius: 12 }}>
                     <div style={{ fontWeight: 900 }}>Month: {s.statement_month}</div>
-                    <div style={{ marginTop: 6 }}>Amount: {s.currency ?? "AED"} {amount.toFixed(2)}</div>
-                    <div style={{ marginTop: 6 }}>Paid: {s.currency ?? "AED"} {paid.toFixed(2)}</div>
-                    <div style={{ marginTop: 6, fontWeight: 900 }}>Pending: {s.currency ?? "AED"} {pending.toFixed(2)}</div>
+
+                    <div style={{ marginTop: 6 }}>
+                      Amount: {s.currency ?? "AED"} {amount.toFixed(2)}
+                    </div>
+                    <div style={{ marginTop: 6 }}>
+                      Paid: {s.currency ?? "AED"} {paid.toFixed(2)}
+                    </div>
+                    <div style={{ marginTop: 6, fontWeight: 900 }}>
+                      Pending: {s.currency ?? "AED"} {pending.toFixed(2)}
+                    </div>
+
                     <div style={{ marginTop: 6, opacity: 0.8 }}>
                       Due: {s.due_date ?? "-"} | Statement Date: {s.statement_date ?? "-"}
                     </div>
@@ -740,14 +787,15 @@ export default function DashboardPage() {
                       <button
                         type="button"
                         onClick={() => startEditStatement(s)}
-                        style={{ padding: "8px 10px", borderRadius: 10, border: "1px solid #999", fontWeight: 800 }}
+                        style={{ padding: "8px 10px", borderRadius: 10, border: "1px solid #999" }}
                       >
                         Edit
                       </button>
+
                       <button
                         type="button"
                         onClick={() => deleteStatement(s.id)}
-                        style={{ padding: "8px 10px", borderRadius: 10, border: "1px solid #999", fontWeight: 800 }}
+                        style={{ padding: "8px 10px", borderRadius: 10, border: "1px solid #999" }}
                       >
                         Delete
                       </button>
@@ -776,6 +824,7 @@ export default function DashboardPage() {
                   setPayCardId(e.target.value);
                   setPayStatementId("");
                 }}
+                required
               >
                 <option value="">Select</option>
                 {cards.map((c) => (
@@ -816,7 +865,7 @@ export default function DashboardPage() {
             </label>
 
             <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-              <button type="submit" style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid #999", fontWeight: 800 }}>
+              <button type="submit" style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid #999" }}>
                 {editingPaymentId ? "Update Payment" : "Save Payment"}
               </button>
 
@@ -824,7 +873,7 @@ export default function DashboardPage() {
                 <button
                   type="button"
                   onClick={resetPaymentForm}
-                  style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid #999", fontWeight: 800 }}
+                  style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid #999" }}
                 >
                   Cancel Edit
                 </button>
@@ -842,7 +891,6 @@ export default function DashboardPage() {
             <div style={{ display: "grid", gap: 10, marginTop: 10 }}>
               {payments.map((p) => {
                 const card = p.card_id ? cardMap.get(p.card_id) : null;
-                const st = p.statement_id ? statements.find((x) => x.id === p.statement_id) : null;
                 const options = p.card_id ? statementsByCard.get(p.card_id) ?? [] : [];
 
                 return (
@@ -852,11 +900,14 @@ export default function DashboardPage() {
                       {card ? ` • ${card.name}${card.bank ? " - " + card.bank : ""}` : ""}
                     </div>
 
-                    <div style={{ marginTop: 6 }}>Amount: {p.currency ?? "AED"} {Number(p.amount ?? 0).toFixed(2)}</div>
+                    <div style={{ marginTop: 6 }}>
+                      Amount: {p.currency ?? "AED"} {Number(p.amount ?? 0).toFixed(2)}
+                    </div>
+
                     {p.note ? <div style={{ marginTop: 6, opacity: 0.8 }}>{p.note}</div> : null}
 
                     <div style={{ marginTop: 10 }}>
-                      <div style={{ fontSize: 13, opacity: 0.8 }}>Quick link statement (affects Paid/Pending):</div>
+                      <div style={{ fontSize: 13, opacity: 0.8 }}>Linked statement (affects Paid/Pending):</div>
                       <select
                         value={p.statement_id ?? ""}
                         onChange={(e) => updatePaymentStatement(p.id, e.target.value)}
@@ -870,12 +921,36 @@ export default function DashboardPage() {
                           </option>
                         ))}
                       </select>
-                      {st ? <div style={{ marginTop: 6, fontSize: 13, opacity: 0.85 }}>Current: {st.statement_month}</div> : null}
                     </div>
 
                     <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap" }}>
                       <button
                         type="button"
                         onClick={() => startEditPayment(p)}
-                        style={{ padding: "8px 10px", borderRadius: 10, border: "1px solid #999", fontWeight: 800 }}
+                        style={{ padding: "8px 10px", borderRadius: 10, border: "1px solid #999" }}
                       >
+                        Edit
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => deletePayment(p.id)}
+                        style={{ padding: "8px 10px", borderRadius: 10, border: "1px solid #999" }}
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      ) : null}
+
+      <div style={{ marginTop: 18, opacity: 0.65, fontSize: 12 }}>
+        Tip: For mobile, deploy on Vercel, then open the Vercel URL on Safari and “Add to Home Screen”.
+      </div>
+    </div>
+  );
+}
